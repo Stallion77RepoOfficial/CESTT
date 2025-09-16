@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from logger import LogBus, Report
-from engine_tests import uci, burst, endurance, threads, multipv, instances, fuzz, pgnreplay
+from engine_tests import uci, burst, endurance, threads, multipv, instances, fuzz, pgnreplay, asmdebug, prosuite
+from instrumentation import detect
 
 
 class CESTT(QMainWindow):
@@ -19,6 +20,8 @@ class CESTT(QMainWindow):
 
         self.bus = LogBus(self._sink)
         self.report = None
+        self.instrumentation_profile = detect(None)
+        self._advanced_unlocked = False
 
         # --- Ana widget ---
         main = QWidget()
@@ -34,6 +37,10 @@ class CESTT(QMainWindow):
         btn_browse = QPushButton("Browse")
         btn_browse.clicked.connect(self.pick_engine)
         top.addWidget(btn_browse)
+        self.engine_edit.textChanged.connect(self.refresh_instrumentation)
+
+        self.instrumentation_label = QLabel("Instrumentation: not detected")
+        layout.addWidget(self.instrumentation_label)
 
         # --- Parametreler ---
         params_box = QGroupBox("Parameters")
@@ -63,6 +70,16 @@ class CESTT(QMainWindow):
             self.test_vars[name] = cb
             th.addWidget(cb)
 
+        adv_box = QGroupBox("Advanced tests (instrumentation required)")
+        layout.addWidget(adv_box)
+        adv_layout = QHBoxLayout(adv_box)
+        self.advanced_vars = {}
+        for name in ["Assembly Debug", "Professional Suite"]:
+            cb = QCheckBox(name)
+            cb.setEnabled(False)
+            self.advanced_vars[name] = cb
+            adv_layout.addWidget(cb)
+
         # --- Çalıştırma + Log ---
         run_bar = QHBoxLayout()
         layout.addLayout(run_bar)
@@ -82,6 +99,8 @@ class CESTT(QMainWindow):
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
         vb.addWidget(self.log_area)
+
+        self.refresh_instrumentation()
 
     # -----------------------
     def _param_row(self, parent, label, default, pick_dir=False):
@@ -106,6 +125,32 @@ class CESTT(QMainWindow):
         if path:
             self.engine_edit.setText(path)
 
+    def refresh_instrumentation(self):
+        path = self.engine_edit.text().strip()
+        profile = detect(path or None)
+        self.instrumentation_profile = profile
+        if profile.manifest:
+            text = f"Instrumentation: {profile.describe()}"
+        elif profile.error:
+            text = f"Instrumentation: error ({profile.error})"
+        else:
+            text = "Instrumentation: not detected"
+        self.instrumentation_label.setText(text)
+
+        available = profile.supports_assembly_debug() or profile.supports_professional_suite()
+        if available and not self._advanced_unlocked:
+            for cb in self.advanced_vars.values():
+                cb.setChecked(True)
+        if available:
+            for cb in self.advanced_vars.values():
+                cb.setEnabled(True)
+            self._advanced_unlocked = True
+        else:
+            for cb in self.advanced_vars.values():
+                cb.setChecked(False)
+                cb.setEnabled(False)
+            self._advanced_unlocked = False
+
     def _sink(self, line: str):
         self.log_area.append(line)
         self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum())
@@ -117,7 +162,10 @@ class CESTT(QMainWindow):
             QMessageBox.critical(self, "Error", "Engine yolu seçin.")
             return
 
-        self.report = Report(eng)
+        self.refresh_instrumentation()
+        profile = self.instrumentation_profile
+
+        self.report = Report(eng, instrumentation=profile)
         self.status_label.setText("running…")
 
         def worker():
@@ -131,21 +179,25 @@ class CESTT(QMainWindow):
                 pgn_dir = self.pgn_dir.text().strip()
 
                 if self.test_vars["UCI"].isChecked():
-                    uci.run(self.bus, self.report, eng, movetime=mv)
+                    uci.run(self.bus, self.report, eng, movetime=mv, instrumentation=profile)
                 if self.test_vars["Burst"].isChecked():
-                    burst.run(self.bus, self.report, eng, count=bct, movetime=mv)
+                    burst.run(self.bus, self.report, eng, count=bct, movetime=mv, instrumentation=profile)
                 if self.test_vars["Endurance"].isChecked():
-                    endurance.run(self.bus, self.report, eng, duration_s=dur, movetime=mv)
+                    endurance.run(self.bus, self.report, eng, duration_s=dur, movetime=mv, instrumentation=profile)
                 if self.test_vars["Threads"].isChecked():
-                    threads.run(self.bus, self.report, eng, movetime=mv, max_threads=thm)
+                    threads.run(self.bus, self.report, eng, movetime=mv, max_threads=thm, instrumentation=profile)
                 if self.test_vars["MultiPV"].isChecked():
-                    multipv.run(self.bus, self.report, eng, movetime=mv, multipv=4)
+                    multipv.run(self.bus, self.report, eng, movetime=mv, multipv=4, instrumentation=profile)
                 if self.test_vars["Multi-instance"].isChecked():
-                    instances.run(self.bus, self.report, eng, instances=inst, per_instance=per, movetime=mv)
+                    instances.run(self.bus, self.report, eng, instances=inst, per_instance=per, movetime=mv, instrumentation=profile)
                 if self.test_vars["UCI Fuzz"].isChecked():
-                    fuzz.run(self.bus, self.report, eng, seconds=10)
+                    fuzz.run(self.bus, self.report, eng, seconds=10, instrumentation=profile)
                 if self.test_vars["PGN Replay"].isChecked() and pgn_dir:
-                    pgnreplay.run(self.bus, self.report, eng, pgn_dir=pgn_dir, movetime=mv, max_games=200)
+                    pgnreplay.run(self.bus, self.report, eng, pgn_dir=pgn_dir, movetime=mv, max_games=200, instrumentation=profile)
+                if self.advanced_vars["Assembly Debug"].isChecked():
+                    asmdebug.run(self.bus, self.report, eng, instrumentation=profile)
+                if self.advanced_vars["Professional Suite"].isChecked():
+                    prosuite.run(self.bus, self.report, eng, movetime=mv, instrumentation=profile)
 
             except Exception as e:
                 self.bus.log(f"[ERROR] {e!r}")

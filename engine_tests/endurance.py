@@ -1,12 +1,13 @@
 import time
 from core import EngineRunner, random_legal_fen
 
-def run(logger, report, path, duration_s=60, movetime=0.1):
+
+def run(logger, report, path, duration_s=60, movetime=0.1, instrumentation=None):
     report.add_test("endurance", duration_s=duration_s, movetime=movetime)
     t0 = time.time()
     iters = 0
     cpu_peak, rss_peak = 0.0, 0
-    with EngineRunner(path) as er:
+    with EngineRunner(path, instrumentation=instrumentation) as er:
         while time.time() - t0 < duration_s:
             fen = random_legal_fen(14)
             cp, _ = er.analyse_cp(fen, movetime=movetime)

@@ -1,8 +1,9 @@
 from core import EngineRunner, random_legal_fen
 
-def run(logger, report, path, count=200, movetime=0.02):
+
+def run(logger, report, path, count=200, movetime=0.02, instrumentation=None):
     report.add_test("burst", count=count, movetime=movetime)
-    with EngineRunner(path) as er:
+    with EngineRunner(path, instrumentation=instrumentation) as er:
         nodes_total = 0
         for i in range(count):
             fen = random_legal_fen(10)

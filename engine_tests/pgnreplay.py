@@ -9,13 +9,13 @@ def _stream_games(paths):
                 if not g: break
                 yield p, g
 
-def run(logger, report, path, pgn_dir, movetime=0.05, max_games=200):
+def run(logger, report, path, pgn_dir, movetime=0.05, max_games=200, instrumentation=None):
     files = glob.glob(os.path.join(pgn_dir, "*.pgn"))
     report.add_test("pgn_replay", dir=pgn_dir, movetime=movetime, max_games=max_games, files=len(files))
     if not files:
         logger.log("[PGN] no files found"); return
     count = 0
-    with EngineRunner(path) as er:
+    with EngineRunner(path, instrumentation=instrumentation) as er:
         for fpath, game in _stream_games(files):
             board = game.board()
             for mv in game.mainline_moves():

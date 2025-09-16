@@ -1,9 +1,10 @@
 import threading, queue, time
 from core import EngineRunner, random_legal_fen
 
-def _worker(idx, path, movetime, per_instance, q):
+
+def _worker(idx, path, movetime, per_instance, q, instrumentation):
     try:
-        with EngineRunner(path) as er:
+        with EngineRunner(path, instrumentation=instrumentation) as er:
             for i in range(per_instance):
                 fen = random_legal_fen(8)
                 cp,_ = er.analyse_cp(fen, movetime=movetime)
@@ -13,12 +14,16 @@ def _worker(idx, path, movetime, per_instance, q):
     except Exception as e:
         q.put(f"[Inst#{idx}] ERROR: {e!r}")
 
-def run(logger, report, path, instances=4, per_instance=50, movetime=0.1):
+def run(logger, report, path, instances=4, per_instance=50, movetime=0.1, instrumentation=None):
     report.add_test("multi_instance", instances=instances, per_instance=per_instance, movetime=movetime)
     q = queue.Queue()
     threads = []
     for k in range(instances):
-        t = threading.Thread(target=_worker, args=(k, path, movetime, per_instance, q), daemon=True)
+        t = threading.Thread(
+            target=_worker,
+            args=(k, path, movetime, per_instance, q, instrumentation),
+            daemon=True,
+        )
         t.start(); threads.append(t)
 
     alive = instances; t0 = time.time()

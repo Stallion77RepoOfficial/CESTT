@@ -1,9 +1,13 @@
 import os, time, random
 import chess, chess.engine
+from typing import Optional, TYPE_CHECKING
 try:
     import psutil
 except Exception:
     psutil = None
+
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from instrumentation import InstrumentationProfile
 
 def clamp(x, lo, hi): return max(lo, min(hi, x))
 def now(): return time.time()
@@ -17,12 +21,22 @@ def random_legal_fen(max_plies=12):
 
 class EngineRunner:
     """Context manager: UCI engine aç, configure et, analyse/play yap."""
-    def __init__(self, path, threads=1, hash_mb=128, multipv=1, uci_options=None):
+
+    def __init__(
+        self,
+        path,
+        threads: int = 1,
+        hash_mb: int = 128,
+        multipv: int = 1,
+        uci_options: Optional[dict] = None,
+        instrumentation: Optional["InstrumentationProfile"] = None,
+    ):
         self.path = path
         self.threads = int(threads)
         self.hash_mb = int(hash_mb)
         self.multipv = int(multipv)
         self.uci_options = dict(uci_options or {})
+        self.instrumentation = instrumentation
         self.engine = None
         self.proc = None
 
@@ -30,10 +44,17 @@ class EngineRunner:
         self.engine = chess.engine.SimpleEngine.popen_uci(self.path)
         opts = {"Threads": self.threads, "Hash": self.hash_mb, "MultiPV": self.multipv}
         opts.update(self.uci_options)
+        if self.instrumentation:
+            opts.update(self.instrumentation.uci_options)
         try:
             self.engine.configure(opts)
         except Exception:
             pass
+        if self.instrumentation:
+            try:
+                self.instrumentation.activate(self)
+            except Exception:
+                pass
         # process handle
         try:
             self.proc = psutil.Process(self.engine.process.pid) if psutil else None
@@ -62,3 +83,27 @@ class EngineRunner:
                 "cpu_percent": self.proc.cpu_percent(interval=None),
                 "rss": self.proc.memory_info().rss
             }
+
+    # Instrumentation helpers -------------------------------------------------
+    def send_command(self, line: str) -> bool:
+        if not self.engine:
+            raise RuntimeError("engine not running")
+        proto = getattr(self.engine, "protocol", None)
+        if proto:
+            sender = getattr(proto, "send_line", None) or getattr(proto, "write_line", None)
+            if sender:
+                sender(line)
+                return True
+        proc = getattr(self.engine, "process", None)
+        try:
+            stdin = getattr(proc, "stdin", None)
+        except Exception:
+            stdin = None
+        if stdin:
+            try:
+                stdin.write(line + "\n")
+                stdin.flush()
+                return True
+            except Exception:
+                return False
+        return False
