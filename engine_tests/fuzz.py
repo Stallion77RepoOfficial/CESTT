@@ -5,7 +5,8 @@ def random_garbage():
     letters = string.ascii_letters + string.digits + " :-_/\\\t"
     return "".join(random.choice(letters) for _ in range(random.randint(3, 40)))
 
-def run(logger, report, path, seconds=10):
+
+def run(logger, report, path, seconds=10, instrumentation=None):
     report.add_test("uci_fuzz", seconds=seconds)
     try:
         p = subprocess.Popen([path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -18,6 +19,16 @@ def run(logger, report, path, seconds=10):
         p.stdin.write("uci\n"); p.stdin.flush()
     except Exception:
         pass
+
+    if instrumentation:
+        try:
+            for name, value in instrumentation.uci_options.items():
+                p.stdin.write(f"setoption name {name} value {value}\n")
+            for cmd in getattr(instrumentation, "handshake_commands", []):
+                p.stdin.write(cmd + "\n")
+            p.stdin.flush()
+        except Exception:
+            pass
 
     while time.time() - t0 < seconds and p.poll() is None:
         payload = random.choice([
