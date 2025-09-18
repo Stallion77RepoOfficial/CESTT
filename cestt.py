@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, time, datetime, argparse, platform, shutil, glob, subprocess, shlex, threading, queue, traceback, signal
+import os, sys, time, datetime, argparse, platform, shutil, glob, subprocess, shlex, threading, queue, traceback
 import psutil
 import chess, chess.pgn
 
@@ -83,20 +83,17 @@ class UCIEngine:
     def __init__(self, cmd, tag, env=None):
         self.proc=psutil.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, bufsize=1, universal_newlines=True)
         self.tag=tag
-        self.q=queue.Queue()
-        self.asan_q=queue.Queue()
-        self.buf=[]
+        self.q=queue.Queue(); self.asan_q=queue.Queue()
         self.rd=threading.Thread(target=self._reader,daemon=True); self.rd.start()
         self._send("uci"); self._wait("uciok"); self._send("isready"); self._wait("readyok"); self._send("ucinewgame")
     def _reader(self):
-        with open(os.path.join(LOG_DIR,f"engine_{self.tag}.log"),"a",encoding="utf-8") as lf, \
-             open(os.path.join(LOG_DIR,f"stderr_{self.tag}.log"),"a",encoding="utf-8") as ef:
-            for line in self.proc.stdout:
-                s=line.rstrip("\n")
-                lf.write(s+"\n")
-                if any(k in s for k in ASAN_SIGS): 
-                    self.asan_q.put(s); ef.write(s+"\n")
-                self.q.put(s)
+        for line in self.proc.stdout:
+            s=line.rstrip("\n")
+            if any(k in s for k in ASAN_SIGS):
+                self.asan_q.put(s); log(f"[{self.tag}] ASAN: {s}",err=True)
+            else:
+                log(f"[{self.tag}] {s}")
+            self.q.put(s)
     def _send(self, s): 
         try: self.proc.stdin.write(s+"\n"); self.proc.stdin.flush()
         except Exception: pass
@@ -108,7 +105,6 @@ class UCIEngine:
                 if token in s: return True
             except queue.Empty: pass
         return False
-    def newgame(self): self._send("ucinewgame"); self._send("isready"); self._wait("readyok")
     def go_bestmove(self, fen, depth):
         self._send(f"position fen {fen}")
         self._send(f"go depth {depth}")
@@ -124,9 +120,7 @@ class UCIEngine:
                 if time.time()-t>30: break
         return best
     def kill(self):
-        try:
-            self._send("quit")
-            self.proc.terminate()
+        try: self._send("quit"); self.proc.terminate()
         except Exception: pass
 
 def worker(wid, engine_path, depth, max_moves, mem_limit_mb, spin_sec, games_limit):
@@ -149,8 +143,13 @@ def worker(wid, engine_path, depth, max_moves, mem_limit_mb, spin_sec, games_lim
                     ctx={"ENGINE_PATH":engine_path,"WORKER":wid,"GAME":game_count,"MOVE":mv,"PID":eng.proc.pid,"FEN":board.fen()}
                     dump_crash(ctx,"\n".join(buf), pid_hint=eng.proc.pid, note="ASAN signal")
                     break
-                rss=p.memory_info().rss/(1024*1024)
-                thsum=sum([t.system_time+t.user_time for t in p.threads()])
+                try:
+                    rss=p.memory_info().rss/(1024*1024)
+                except (psutil.NoSuchProcess,psutil.ZombieProcess,psutil.AccessDenied): rss=0.0
+                try:
+                    thsum=sum(t.system_time+t.user_time for t in p.threads())
+                except (psutil.NoSuchProcess,psutil.ZombieProcess,psutil.AccessDenied,RuntimeError):
+                    thsum=p.cpu_percent(interval=None)
                 log(f"[w{wid}] g{game_count} m{mv} rss {rss:.1f}MB thr_cpu {thsum:.2f}")
                 if rss>mem_limit_mb:
                     ctx={"ENGINE_PATH":engine_path,"WORKER":wid,"GAME":game_count,"MOVE":mv,"PID":eng.proc.pid,"FEN":board.fen()}
@@ -173,9 +172,8 @@ def worker(wid, engine_path, depth, max_moves, mem_limit_mb, spin_sec, games_lim
                     ctx={"ENGINE_PATH":engine_path,"WORKER":wid,"GAME":game_count,"MOVE":mv,"PID":eng.proc.pid,"FEN":board.fen()}
                     dump_crash(ctx, str(e), pid_hint=eng.proc.pid, note="illegal move parse")
                     break
-            ts=datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            fn=os.path.join(PGN_DIR,f"w{wid}_g{game_count}_{ts}.pgn")
-            with open(fn,"w",encoding="utf-8") as f: print(game, file=f)
+            with open(os.path.join(PGN_DIR,"games_all.pgn"),"a",encoding="utf-8") as f:
+                print(game, file=f); f.write("\n\n")
         eng.kill()
     except Exception as e:
         log(f"[w{wid}] EXC {e}\n{traceback.format_exc()}", err=True)
@@ -190,18 +188,16 @@ def main():
     ap.add_argument("--mem-limit-mb", type=float, default=2048.0)
     ap.add_argument("--spin-sec", type=float, default=10.0)
     args=ap.parse_args()
-
     if not os.path.isfile(args.engine): 
         log("engine not found", err=True); sys.exit(1)
     if posix(): enable_core()
-
-    procs=[]
+    threads=[]
     for w in range(args.workers):
-        p=threading.Thread(target=worker, args=(w,args.engine,args.depth,args.max_moves,args.mem_limit_mb,args.spin_sec,args.games), daemon=True)
-        p.start(); procs.append(p)
+        t=threading.Thread(target=worker, args=(w,args.engine,args.depth,args.max_moves,args.mem_limit_mb,args.spin_sec,args.games), daemon=True)
+        t.start(); threads.append(t)
     log("stress started")
     try:
-        while any(t.is_alive() for t in procs): time.sleep(0.5)
+        while any(t.is_alive() for t in threads): time.sleep(0.5)
     except KeyboardInterrupt:
         log("interrupt, exiting")
     log("done")
